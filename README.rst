@@ -1,9 +1,9 @@
-.. image:: http://docs.celeryproject.org/en/latest/_images/celery-banner-small.png
+.. image:: https://docs.celeryq.dev/en/latest/_images/celery-banner-small.png
 
 |build-status| |coverage| |license| |wheel| |pyversion| |pyimp| |ocbackerbadge| |ocsponsorbadge|
 
-:Version: 5.2.0b3 (dawn-chorus)
-:Web: https://docs.celeryproject.org/en/stable/index.html
+:Version: 5.3.0b1 (dawn-chorus)
+:Web: https://docs.celeryq.dev/en/stable/index.html
 :Download: https://pypi.org/project/celery/
 :Source: https://github.com/celery/celery/
 :Keywords: task, queue, job, async, rabbitmq, amqp, redis,
@@ -57,22 +57,22 @@ in such a way that the client enqueues an URL to be requested by a worker.
 What do I need?
 ===============
 
-Celery version 5.2.0b3 runs on,
+Celery version 5.3.0a1 runs on,
 
-- Python (3.7, 3.8, 3.9)
-- PyPy3.7 (7.3+)
+- Python (3.7, 3.8, 3.9, 3.10)
+- PyPy3.7 (7.3.7+)
 
 
-This is the next version of celery which will support Python 3.6 or newer.
+This is the version of celery which will support Python 3.7 or newer.
 
 If you're running an older version of Python, you need to be running
 an older version of Celery:
 
+- Python 3.6: Celery 5.1 or earlier.
+- Python 2.7: Celery 4.x series.
 - Python 2.6: Celery series 3.1 or earlier.
 - Python 2.5: Celery series 3.0 or earlier.
 - Python 2.4: Celery series 2.2 or earlier.
-- Python 2.7: Celery 4.x series.
-- Python 3.6: Celery 5.1 or earlier.
 
 Celery is a project with minimal funding,
 so we don't support Microsoft Windows.
@@ -90,7 +90,7 @@ Get Started
 ===========
 
 If this is the first time you're trying to use Celery, or you're
-new to Celery 5.0.5 or 5.2.0b3 coming from previous versions then you should read our
+new to Celery v5.3.0a1 coming from previous versions then you should read our
 getting started tutorials:
 
 - `First steps with Celery`_
@@ -102,10 +102,10 @@ getting started tutorials:
     A more complete overview, showing more features.
 
 .. _`First steps with Celery`:
-    http://docs.celeryproject.org/en/latest/getting-started/first-steps-with-celery.html
+    https://docs.celeryq.dev/en/stable/getting-started/first-steps-with-celery.html
 
 .. _`Next steps`:
-    http://docs.celeryproject.org/en/latest/getting-started/next-steps.html
+    https://docs.celeryq.dev/en/stable/getting-started/next-steps.html
 
  You can also get started with Celery by using a hosted broker transport CloudAMQP. The largest hosting provider of RabbitMQ is a proud sponsor of Celery.
 
@@ -226,7 +226,7 @@ tutorials, and an API reference.
 
 最新的中文文档托管在 https://www.celerycn.io/ 中，包含用户指南、教程、API接口等。
 
-.. _`latest documentation`: http://docs.celeryproject.org/en/latest/
+.. _`latest documentation`: https://docs.celeryq.dev/en/latest/
 
 .. _celery-installation:
 
@@ -258,9 +258,9 @@ separating them by commas.
 ::
 
 
-    $ pip install "celery[librabbitmq]"
+    $ pip install "celery[amqp]"
 
-    $ pip install "celery[librabbitmq,redis,auth,msgpack]"
+    $ pip install "celery[amqp,redis,auth,msgpack]"
 
 The following bundles are available:
 
@@ -288,8 +288,8 @@ Concurrency
 Transports and Backends
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-:``celery[librabbitmq]``:
-    for using the librabbitmq C library.
+:``celery[amqp]``:
+    for using the RabbitMQ amqp python library.
 
 :``celery[redis]``:
     for using Redis as a message transport or as a result backend.
@@ -307,7 +307,7 @@ Transports and Backends
     for using Memcached as a result backend (pure-Python implementation).
 
 :``celery[cassandra]``:
-    for using Apache Cassandra as a result backend with DataStax driver.
+    for using Apache Cassandra/Astra DB as a result backend with the DataStax driver.
 
 :``celery[azureblockblob]``:
     for using Azure Storage as a result backend (using ``azure-storage``)
@@ -461,7 +461,7 @@ Be sure to also read the `Contributing to Celery`_ section in the
 documentation.
 
 .. _`Contributing to Celery`:
-    http://docs.celeryproject.org/en/master/contributing.html
+    https://docs.celeryq.dev/en/master/contributing.html
 
 |oc-contributors|
 

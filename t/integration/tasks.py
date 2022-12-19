@@ -1,6 +1,8 @@
+from collections.abc import Iterable
 from time import sleep
 
 from celery import Signature, Task, chain, chord, group, shared_task
+from celery.canvas import StampingVisitor, signature
 from celery.exceptions import SoftTimeLimitExceeded
 from celery.utils.log import get_task_logger
 
@@ -22,6 +24,12 @@ def add(x, y, z=None):
         return x + y + z
     else:
         return x + y
+
+
+@shared_task
+def mul(x: int, y: int) -> int:
+    """Multiply two numbers"""
+    return x * y
 
 
 @shared_task
@@ -85,6 +93,12 @@ def delayed_sum_with_soft_guard(numbers, pause_time=1):
 def tsum(nums):
     """Sum an iterable of numbers."""
     return sum(nums)
+
+
+@shared_task
+def xsum(nums):
+    """Sum of ints and lists."""
+    return sum(sum(num) if isinstance(num, Iterable) else num for num in nums)
 
 
 @shared_task(bind=True)
@@ -197,16 +211,17 @@ def retry(self, return_value=None):
     raise self.retry(exc=ExpectedException(), countdown=5)
 
 
-@shared_task(bind=True, expires=60.0, max_retries=1)
-def retry_once(self, *args, expires=60.0, max_retries=1, countdown=0.1):
+@shared_task(bind=True, expires=120.0, max_retries=1)
+def retry_once(self, *args, expires=None, max_retries=1, countdown=0.1):
     """Task that fails and is retried. Returns the number of retries."""
     if self.request.retries:
         return self.request.retries
     raise self.retry(countdown=countdown,
+                     expires=expires,
                      max_retries=max_retries)
 
 
-@shared_task(bind=True, expires=60.0, max_retries=1)
+@shared_task(bind=True, max_retries=1)
 def retry_once_priority(self, *args, expires=60.0, max_retries=1,
                         countdown=0.1):
     """Task that fails and is retried. Returns the priority."""
@@ -216,11 +231,27 @@ def retry_once_priority(self, *args, expires=60.0, max_retries=1,
                      max_retries=max_retries)
 
 
+@shared_task(bind=True, max_retries=1)
+def retry_once_headers(self, *args, max_retries=1,
+                       countdown=0.1):
+    """Task that fails and is retried. Returns headers."""
+    if self.request.retries:
+        return self.request.headers
+    raise self.retry(countdown=countdown,
+                     max_retries=max_retries)
+
+
 @shared_task
 def redis_echo(message, redis_key="redis-echo"):
     """Task that appends the message to a redis list."""
     redis_connection = get_redis_connection()
     redis_connection.rpush(redis_key, message)
+
+
+@shared_task(bind=True)
+def redis_echo_group_id(self, _, redis_key="redis-group-ids"):
+    redis_connection = get_redis_connection()
+    redis_connection.rpush(redis_key, self.request.group)
 
 
 @shared_task
@@ -397,3 +428,30 @@ def errback_old_style(request_id):
 def errback_new_style(request, exc, tb):
     redis_count(request.id)
     return request.id
+
+
+class StampOnReplace(StampingVisitor):
+    stamp = {'StampOnReplace': 'This is the replaced task'}
+
+    def on_signature(self, sig, **headers) -> dict:
+        return self.stamp
+
+
+class StampedTaskOnReplace(Task):
+    """Custom task for stamping on replace"""
+
+    def on_replace(self, sig):
+        sig.stamp(StampOnReplace())
+        return super().on_replace(sig)
+
+
+@shared_task
+def replaced_with_me():
+    return True
+
+
+@shared_task(bind=True, base=StampedTaskOnReplace)
+def replace_with_stamped_task(self: StampedTaskOnReplace, replace_with=None):
+    if replace_with is None:
+        replace_with = replaced_with_me.s()
+    self.replace(signature(replace_with))

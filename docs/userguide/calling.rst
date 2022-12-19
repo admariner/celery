@@ -167,6 +167,9 @@ The callbacks/errbacks will then be called in order, and all
 callbacks will be called with the return value of the parent task
 as a partial argument.
 
+In the case of a chord, we can handle errors using multiple handling strategies.
+See :ref:`chord error handling <chord-errors>` for more information.
+
 .. _calling-on-message:
 
 On message
@@ -251,6 +254,31 @@ and timezone information):
 
     >>> tomorrow = datetime.utcnow() + timedelta(days=1)
     >>> add.apply_async((2, 2), eta=tomorrow)
+
+.. warning::
+
+    When using RabbitMQ as a message broker when specifying a ``countdown``
+    over 15 minutes, you may encounter the problem that the worker terminates
+    with an :exc:`~amqp.exceptions.PreconditionFailed` error will be raised:
+
+    .. code-block:: pycon
+
+        amqp.exceptions.PreconditionFailed: (0, 0): (406) PRECONDITION_FAILED - consumer ack timed out on channel
+
+    In RabbitMQ since version 3.8.15 the default value for
+    ``consumer_timeout`` is 15 minutes.
+    Since version 3.8.17 it was increased to 30 minutes. If a consumer does
+    not ack its delivery for more than the timeout value, its channel will be
+    closed with a ``PRECONDITION_FAILED`` channel exception.
+    See `Delivery Acknowledgement Timeout`_ for more information.
+
+    To solve the problem, in RabbitMQ configuration file ``rabbitmq.conf`` you
+    should specify the ``consumer_timeout`` parameter greater than or equal to
+    your countdown value. For example, you can specify a very large value
+    of ``consumer_timeout = 31622400000``, which is equal to 1 year
+    in milliseconds, to avoid problems in the future.
+
+.. _`Delivery Acknowledgement Timeout`: https://www.rabbitmq.com/consumers.html#acknowledgement-timeout
 
 .. _calling-expiration:
 
@@ -425,8 +453,7 @@ them into the Kombu serializer registry
 Each option has its advantages and disadvantages.
 
 json -- JSON is supported in many programming languages, is now
-    a standard part of Python (since 2.6), and is fairly fast to decode
-    using the modern Python libraries, such as :pypi:`simplejson`.
+    a standard part of Python (since 2.6), and is fairly fast to decode.
 
     The primary disadvantage to JSON is that it limits you to the following
     data types: strings, Unicode, floats, Boolean, dictionaries, and lists.
@@ -470,17 +497,29 @@ yaml -- YAML has many of the same characteristics as json,
     If you need a more expressive set of data types and need to maintain
     cross-language compatibility, then YAML may be a better fit than the above.
 
+    To use it, install Celery with:
+
+    .. code-block:: console
+
+      $ pip install celery[yaml]
+
     See http://yaml.org/ for more information.
 
 msgpack -- msgpack is a binary serialization format that's closer to JSON
-    in features. It's very young however, and support should be considered
-    experimental at this point.
+    in features. The format compresses better, so is a faster to parse and
+    encode compared to JSON.
+
+    To use it, install Celery with:
+
+    .. code-block:: console
+
+      $ pip install celery[msgpack]
 
     See http://msgpack.org/ for more information.
 
-The encoding used is available as a message header, so the worker knows how to
-deserialize any task. If you use a custom serializer, this serializer must
-be available for the worker.
+To use a custom serializer you need add the content type to
+:setting:`accept_content`. By default, only JSON is accepted,
+and tasks containing other content headers are rejected.
 
 The following order is used to decide the serializer
 used when sending a task:
@@ -648,13 +687,13 @@ publisher:
 
 .. code-block:: python
 
-
+    numbers = [(2, 2), (4, 4), (8, 8), (16, 16)]
     results = []
     with add.app.pool.acquire(block=True) as connection:
         with add.get_publisher(connection) as publisher:
             try:
-                for args in numbers:
-                    res = add.apply_async((2, 2), publisher=publisher)
+                for i, j in numbers:
+                    res = add.apply_async((i, j), publisher=publisher)
                     results.append(res)
     print([res.get() for res in results])
 

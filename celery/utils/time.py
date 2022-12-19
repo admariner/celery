@@ -66,7 +66,7 @@ class LocalTimezone(tzinfo):
         else:
             self.DSTOFFSET = self.STDOFFSET
         self.DSTDIFF = self.DSTOFFSET - self.STDOFFSET
-        tzinfo.__init__(self)
+        super().__init__()
 
     def __repr__(self):
         return f'<LocalTimezone: UTC{int(self.DSTOFFSET.total_seconds() / 3600):+03d}>'
@@ -381,7 +381,7 @@ def get_exponential_backoff_interval(
     # Will be zero if factor equals 0
     countdown = min(maximum, factor * (2 ** retries))
     # Full jitter according to
-    # https://www.awsarchitectureblog.com/2015/03/backoff.html
+    # https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
     if full_jitter:
         countdown = random.randrange(countdown + 1)
     # Adjust according to maximum wait time and account for negative values.

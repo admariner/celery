@@ -28,8 +28,8 @@ __all__ = (
 
 E_WOULDBLOCK = """\
 Never call result.get() within a task!
-See http://docs.celeryq.org/en/latest/userguide/tasks.html\
-#task-synchronous-subtasks
+See https://docs.celeryq.dev/en/latest/userguide/tasks.html\
+#avoid-launching-synchronous-subtasks
 """
 
 
@@ -160,6 +160,30 @@ class AsyncResult(ResultBase):
         self.app.control.revoke(self.id, connection=connection,
                                 terminate=terminate, signal=signal,
                                 reply=wait, timeout=timeout)
+
+    def revoke_by_stamped_headers(self, headers, connection=None, terminate=False, signal=None,
+                                  wait=False, timeout=None):
+        """Send revoke signal to all workers only for tasks with matching headers values.
+
+        Any worker receiving the task, or having reserved the
+        task, *must* ignore it.
+        All header fields *must* match.
+
+        Arguments:
+            headers (dict[str, Union(str, list)]): Headers to match when revoking tasks.
+            terminate (bool): Also terminate the process currently working
+                on the task (if any).
+            signal (str): Name of signal to send to process if terminate.
+                Default is TERM.
+            wait (bool): Wait for replies from workers.
+                The ``timeout`` argument specifies the seconds to wait.
+                Disabled by default.
+            timeout (float): Time in seconds to wait for replies when
+                ``wait`` is enabled.
+        """
+        self.app.control.revoke_by_stamped_headers(headers, connection=connection,
+                                                   terminate=terminate, signal=signal,
+                                                   reply=wait, timeout=timeout)
 
     def get(self, timeout=None, propagate=True, interval=0.5,
             no_ack=True, follow_parents=True, callback=None, on_message=None,
@@ -300,13 +324,15 @@ class AsyncResult(ResultBase):
     def iterdeps(self, intermediate=False):
         stack = deque([(None, self)])
 
+        is_incomplete_stream = not intermediate
+
         while stack:
             parent, node = stack.popleft()
             yield parent, node
             if node.ready():
                 stack.extend((node, child) for child in node.children or [])
             else:
-                if not intermediate:
+                if is_incomplete_stream:
                     raise IncompleteStream()
 
     def ready(self):
@@ -370,10 +396,6 @@ class AsyncResult(ResultBase):
         elif isinstance(other, str):
             return other == self.id
         return NotImplemented
-
-    def __ne__(self, other):
-        res = self.__eq__(other)
-        return True if res is NotImplemented else not res
 
     def __copy__(self):
         return self.__class__(
@@ -629,8 +651,11 @@ class ResultSet(ResultBase):
     def completed_count(self):
         """Task completion count.
 
+        Note that `complete` means `successful` in this context. In other words, the
+        return value of this method is the number of ``successful`` tasks.
+
         Returns:
-            int: the number of tasks completed.
+            int: the number of complete (i.e. successful) tasks.
         """
         return sum(int(result.successful()) for result in self.results)
 
@@ -830,10 +855,6 @@ class ResultSet(ResultBase):
             return other.results == self.results
         return NotImplemented
 
-    def __ne__(self, other):
-        res = self.__eq__(other)
-        return True if res is NotImplemented else not res
-
     def __repr__(self):
         return f'<{type(self).__name__}: [{", ".join(r.id for r in self.results)}]>'
 
@@ -884,11 +905,11 @@ class GroupResult(ResultSet):
     def __init__(self, id=None, results=None, parent=None, **kwargs):
         self.id = id
         self.parent = parent
-        ResultSet.__init__(self, results, **kwargs)
+        super().__init__(results, **kwargs)
 
     def _on_ready(self):
         self.backend.remove_pending_result(self)
-        ResultSet._on_ready(self)
+        super()._on_ready()
 
     def save(self, backend=None):
         """Save group-result for later retrieval using :meth:`restore`.
@@ -924,10 +945,6 @@ class GroupResult(ResultSet):
         elif isinstance(other, str):
             return other == self.id
         return NotImplemented
-
-    def __ne__(self, other):
-        res = self.__eq__(other)
-        return True if res is NotImplemented else not res
 
     def __repr__(self):
         return f'<{type(self).__name__}: {self.id} [{", ".join(r.id for r in self.results)}]>'

@@ -126,6 +126,7 @@ have been moved into a new  ``task_`` prefix.
 ``CELERY_SECURITY_CERTIFICATE``            :setting:`security_certificate`
 ``CELERY_SECURITY_CERT_STORE``             :setting:`security_cert_store`
 ``CELERY_SECURITY_KEY``                    :setting:`security_key`
+``CELERY_SECURITY_KEY_PASSWORD``           :setting:`security_key_password`
 ``CELERY_ACKS_LATE``                       :setting:`task_acks_late`
 ``CELERY_ACKS_ON_FAILURE_OR_TIMEOUT``      :setting:`task_acks_on_failure_or_timeout`
 ``CELERY_ALWAYS_EAGER``                    :setting:`task_always_eager`
@@ -145,11 +146,12 @@ have been moved into a new  ``task_`` prefix.
 ``CELERY_QUEUES``                          :setting:`task_queues`
 ``CELERY_ROUTES``                          :setting:`task_routes`
 ``CELERY_SEND_SENT_EVENT``                 :setting:`task_send_sent_event`
-``CELERY_SERIALIZER``                      :setting:`task_serializer`
+``CELERY_TASK_SERIALIZER``                 :setting:`task_serializer`
 ``CELERYD_SOFT_TIME_LIMIT``                :setting:`task_soft_time_limit`
 ``CELERY_TASK_TRACK_STARTED``              :setting:`task_track_started`
 ``CELERY_TASK_REJECT_ON_WORKER_LOST``      :setting:`task_reject_on_worker_lost`
 ``CELERYD_TIME_LIMIT``                     :setting:`task_time_limit`
+``CELERY_ALLOW_ERROR_CB_ON_CHORD_HEADER``  :setting:`task_allow_error_cb_on_chord_header`
 ``CELERYD_AGENT``                          :setting:`worker_agent`
 ``CELERYD_AUTOSCALER``                     :setting:`worker_autoscaler`
 ``CELERYD_CONCURRENCY``                    :setting:`worker_concurrency`
@@ -510,6 +512,57 @@ Default: No time limit.
 Task hard time limit in seconds. The worker processing the task will
 be killed and replaced with a new one when this is exceeded.
 
+.. setting:: task_allow_error_cb_on_chord_header
+
+``task_allow_error_cb_on_chord_header``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. versionadded:: 5.3
+
+Default: Disabled.
+
+Enabling this flag will allow linking an error callback to a chord header,
+which by default will not link when using :code:`link_error()`, and preventing
+from the chord's body to execute if any of the tasks in the header fails.
+
+Consider the following canvas with the flag disabled (default behavior):
+
+.. code-block:: python
+
+    header = group([t1, t2])
+    body = t3
+    c = chord(header, body)
+    c.link_error(error_callback_sig)
+
+If *any* of the header tasks failed (:code:`t1` or :code:`t2`), by default, the chord body (:code:`t3`) would **not execute**, and :code:`error_callback_sig` will be called **once** (for the body).
+
+Enabling this flag will change the above behavior by:
+
+1. :code:`error_callback_sig` will be linked to :code:`t1` and :code:`t2` (as well as :code:`t3`).
+2. If *any* of the header tasks failed, :code:`error_callback_sig` will be called **for each** failed header task **and** the :code:`body` (even if the body didn't run).
+
+Consider now the following canvas with the flag enabled:
+
+.. code-block:: python
+
+    header = group([failingT1, failingT2])
+    body = t3
+    c = chord(header, body)
+    c.link_error(error_callback_sig)
+
+If *all* of the header tasks failed (:code:`failingT1` and :code:`failingT2`), then the chord body (:code:`t3`) would **not execute**, and :code:`error_callback_sig` will be called **3 times** (two times for the header and one time for the body).
+
+Lastly, consider the following canvas with the flag enabled:
+
+.. code-block:: python
+
+    header = group([failingT1, failingT2])
+    body = t3
+    upgraded_chord = chain(header, body)
+    upgraded_chord.link_error(error_callback_sig)
+
+This canvas will behave exactly the same as the previous one, since the :code:`chain` will be upgraded to a :code:`chord` internally.
+
 .. setting:: task_soft_time_limit
 
 ``task_soft_time_limit``
@@ -542,7 +595,7 @@ clean up before the hard time limit comes:
 Default: Disabled.
 
 Late ack means the task messages will be acknowledged **after** the task
-has been executed, not *just before* (the default behavior).
+has been executed, not *right before* (the default behavior).
 
 .. seealso::
 
@@ -595,7 +648,7 @@ This value is used for tasks that doesn't have a custom rate limit
 
 .. seealso::
 
-    The setting:`worker_disable_rate_limits` setting can
+    The :setting:`worker_disable_rate_limits` setting can
     disable all rate limits.
 
 .. _conf-result-backend:
@@ -852,6 +905,25 @@ The timeout in seconds (int/float) when joining a group's results within a chord
 Default: 1.0.
 
 Default interval for retrying chord tasks.
+
+.. setting:: override_backends
+
+``override_backends``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Default: Disabled by default.
+
+Path to class that implements backend.
+
+Allows to override backend implementation.
+This can be useful if you need to store additional metadata about executed tasks,
+override retry policies, etc.
+
+Example:
+
+.. code-block:: python
+
+    override_backends = {"db": "custom_module.backend.class"}
 
 .. _conf-database-result-backend:
 
@@ -1291,12 +1363,18 @@ used by the redis result backend.
 
 .. _conf-cassandra-result-backend:
 
-Cassandra backend settings
---------------------------
+Cassandra/AstraDB backend settings
+----------------------------------
 
 .. note::
 
     This Cassandra backend driver requires :pypi:`cassandra-driver`.
+
+    This backend can refer to either a regular Cassandra installation
+    or a managed Astra DB instance. Depending on which one, exactly one
+    between the :setting:`cassandra_servers` and
+    :setting:`cassandra_secure_bundle_path` settings must be provided
+    (but not both).
 
     To install, use :command:`pip`:
 
@@ -1316,9 +1394,31 @@ This backend requires the following configuration directives to be set.
 
 Default: ``[]`` (empty list).
 
-List of ``host`` Cassandra servers. For example::
+List of ``host`` Cassandra servers. This must be provided when connecting to
+a Cassandra cluster. Passing this setting is strictly exclusive
+to :setting:`cassandra_secure_bundle_path`. Example::
 
     cassandra_servers = ['localhost']
+
+.. setting:: cassandra_secure_bundle_path
+
+``cassandra_secure_bundle_path``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Default: None.
+
+Absolute path to the secure-connect-bundle zip file to connect
+to an Astra DB instance. Passing this setting is strictly exclusive
+to :setting:`cassandra_servers`.
+Example::
+
+    cassandra_secure_bundle_path = '/home/user/bundles/secure-connect.zip'
+
+When connecting to Astra DB, it is necessary to specify
+the plain-text auth provider and the associated username and password,
+which take the value of the Client ID and the Client Secret, respectively,
+of a valid token generated for the Astra DB instance.
+See below for an Astra DB configuration example.
 
 .. setting:: cassandra_port
 
@@ -1336,7 +1436,7 @@ Port to contact the Cassandra servers on.
 
 Default: None.
 
-The key-space in which to store the results. For example::
+The keyspace in which to store the results. For example::
 
     cassandra_keyspace = 'tasks_keyspace'
 
@@ -1423,17 +1523,84 @@ Named arguments to pass into the ``cassandra.cluster`` class.
         'protocol_version': 3
     }
 
-Example configuration
-~~~~~~~~~~~~~~~~~~~~~
+Example configuration (Cassandra)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: python
 
+    result_backend = 'cassandra://'
     cassandra_servers = ['localhost']
     cassandra_keyspace = 'celery'
     cassandra_table = 'tasks'
-    cassandra_read_consistency = 'ONE'
-    cassandra_write_consistency = 'ONE'
+    cassandra_read_consistency = 'QUORUM'
+    cassandra_write_consistency = 'QUORUM'
     cassandra_entry_ttl = 86400
+
+Example configuration (Astra DB)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    result_backend = 'cassandra://'
+    cassandra_keyspace = 'celery'
+    cassandra_table = 'tasks'
+    cassandra_read_consistency = 'QUORUM'
+    cassandra_write_consistency = 'QUORUM'
+    cassandra_auth_provider = 'PlainTextAuthProvider'
+    cassandra_auth_kwargs = {
+      'username': '<<CLIENT_ID_FROM_ASTRA_DB_TOKEN>>',
+      'password': '<<CLIENT_SECRET_FROM_ASTRA_DB_TOKEN>>'
+    }
+    cassandra_secure_bundle_path = '/path/to/secure-connect-bundle.zip'
+    cassandra_entry_ttl = 86400
+
+Additional configuration
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+The Cassandra driver, when estabilishing the connection, undergoes a stage
+of negotiating the protocol version with the server(s). Similarly,
+a load-balancing policy is automatically supplied (by default
+``DCAwareRoundRobinPolicy``, which in turn has a ``local_dc`` setting, also
+determined by the driver upon connection).
+When possible, one should explicitly provide these in the configuration:
+moreover, future versions of the Cassandra driver will require at least the
+load-balancing policy to be specified (using `execution profiles <https://docs.datastax.com/en/developer/python-driver/3.25/execution_profiles/>`_,
+as shown below).
+
+A full configuration for the Cassandra backend would thus have the
+following additional lines:
+
+.. code-block:: python
+
+    from cassandra.policies import DCAwareRoundRobinPolicy
+    from cassandra.cluster import ExecutionProfile
+    from cassandra.cluster import EXEC_PROFILE_DEFAULT
+    myEProfile = ExecutionProfile(
+      load_balancing_policy=DCAwareRoundRobinPolicy(
+        local_dc='datacenter1', # replace with your DC name
+      )
+    )
+    cassandra_options = {
+      'protocol_version': 5,    # for Cassandra 4, change if needed
+      'execution_profiles': {EXEC_PROFILE_DEFAULT: myEProfile},
+    }
+
+And similarly for Astra DB:
+
+.. code-block:: python
+
+    from cassandra.policies import DCAwareRoundRobinPolicy
+    from cassandra.cluster import ExecutionProfile
+    from cassandra.cluster import EXEC_PROFILE_DEFAULT
+    myEProfile = ExecutionProfile(
+      load_balancing_policy=DCAwareRoundRobinPolicy(
+        local_dc='europe-west1',  # for Astra DB, region name = dc name
+      )
+    )
+    cassandra_options = {
+      'protocol_version': 4,      # for Astra DB
+      'execution_profiles': {EXEC_PROFILE_DEFAULT: myEProfile},
+    }
 
 .. _conf-s3-result-backend:
 
@@ -1563,7 +1730,7 @@ The name for the storage container in which to store the results.
 .. setting:: azureblockblob_base_path
 
 ``azureblockblob_base_path``
-~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. versionadded:: 5.1
 
@@ -1598,6 +1765,24 @@ Default: 2.
 Default: 3.
 
 The maximum number of retry attempts.
+
+.. setting:: azureblockblob_connection_timeout
+
+``azureblockblob_connection_timeout``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Default: 20.
+
+Timeout in seconds for establishing the azure block blob connection.
+
+.. setting:: azureblockblob_read_timeout
+
+``azureblockblob_read_timeout``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Default: 120.
+
+Timeout in seconds for reading of an azure block blob.
 
 .. _conf-elasticsearch-result-backend:
 
@@ -2046,7 +2231,9 @@ or::
 
 The backend will store results in the K/V store of Consul
 as individual keys. The backend supports auto expire of results using TTLs in
-Consul. The full syntax of the URL is::
+Consul. The full syntax of the URL is:
+
+.. code-block:: text
 
     consul://host:port[?one_client=1]
 
@@ -2142,7 +2329,7 @@ Examples:
         },
     }
 
-    task_routes = ('myapp.tasks.route_task', {'celery.ping': 'default})
+    task_routes = ('myapp.tasks.route_task', {'celery.ping': 'default'})
 
 Where ``myapp.tasks.route_task`` could be:
 
@@ -2273,7 +2460,7 @@ becomes::
 
     w1@example.com.dq
 
-Then you can route the task to the task by specifying the hostname
+Then you can route the task to the worker by specifying the hostname
 as the routing key and the ``C.dq`` exchange::
 
     task_routes = {
@@ -2511,12 +2698,14 @@ certificate authority:
       'cert_reqs': ssl.CERT_REQUIRED
     }
 
-.. warning::
+.. versionadded:: 5.1
 
-    Be careful using ``broker_use_ssl=True``. It's possible that your default
-    configuration won't validate the server cert at all. Please read Python
-    `ssl module security
-    considerations <https://docs.python.org/3/library/ssl.html#ssl-security>`_.
+    Starting from Celery 5.1, py-amqp will always validate certificates received from the server
+    and it is no longer required to manually set ``cert_reqs`` to ``ssl.CERT_REQUIRED``.
+
+    The previous default, ``ssl.CERT_NONE`` is insecure and we its usage should be discouraged.
+    If you'd like to revert to the previous insecure default set ``cert_reqs`` to ``ssl.CERT_NONE``
+
 
 ``redis``
 _________
@@ -2578,7 +2767,28 @@ gevent.
 
 Default: Enabled.
 
-Automatically try to re-establish the connection to the AMQP broker if lost.
+Automatically try to re-establish the connection to the AMQP broker if lost
+after the initial connection is made.
+
+The time between retries is increased for each retry, and is
+not exhausted before :setting:`broker_connection_max_retries` is
+exceeded.
+
+.. warning::
+
+    The broker_connection_retry configuration setting will no longer determine
+    whether broker connection retries are made during startup in Celery 6.0 and above.
+    If you wish to refrain from retrying connections on startup,
+    you should set broker_connection_retry_on_startup to False instead.
+
+.. setting:: broker_connection_retry_on_startup
+
+``broker_connection_retry_on_startup``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Default: Enabled.
+
+Automatically try to establish the connection to the AMQP broker on Celery startup if it is unavailable.
 
 The time between retries is increased for each retry, and is
 not exhausted before :setting:`broker_connection_max_retries` is
@@ -2595,6 +2805,19 @@ Maximum number of retries before we give up re-establishing a connection
 to the AMQP broker.
 
 If this is set to :const:`0` or :const:`None`, we'll retry forever.
+
+``broker_channel_error_retry``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. versionadded:: 5.3
+
+Default: Disabled.
+
+Automatically try to re-establish the connection to the AMQP broker
+if any invalid response has been returned.
+
+The retry count and interval is the same as that of `broker_connection_retry`.
+Also, this option doesn't work when `broker_connection_retry` is `False`.
 
 .. setting:: broker_login_method
 
@@ -3101,6 +3324,18 @@ Default: :const:`None`.
 The relative or absolute path to a file containing the private key
 used to sign messages when :ref:`message-signing` is used.
 
+.. setting:: security_key_password
+
+``security_key_password``
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Default: :const:`None`.
+
+.. versionadded:: 5.3.0
+
+The password used to decrypt the private key when :ref:`message-signing`
+is used.
+
 .. setting:: security_certificate
 
 ``security_certificate``
@@ -3273,3 +3508,16 @@ changes to the schedule into account.
 Also when running Celery beat embedded (:option:`-B <celery worker -B>`)
 on Jython as a thread the max interval is overridden and set to 1 so
 that it's possible to shut down in a timely manner.
+
+.. setting:: beat_cron_starting_deadline
+
+``beat_cron_starting_deadline``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. versionadded:: 5.3
+
+Default: None.
+
+When using cron, the number of seconds :mod:`~celery.bin.beat` can look back
+when deciding whether a cron schedule is due. When set to `None`, cronjobs that
+are past due will always run immediately.

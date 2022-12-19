@@ -47,7 +47,7 @@ class UnitLogging(symbol_by_name(Celery.log_cls)):
 def TestApp(name=None, config=None, enable_logging=False, set_as_current=False,
             log=UnitLogging, backend=None, broker=None, **kwargs):
     """App used for testing."""
-    from . import tasks  # noqa
+    from . import tasks
     config = dict(deepcopy(DEFAULT_TEST_CONFIG), **config or {})
     if broker is not None:
         config.pop('broker_url', None)
@@ -80,8 +80,10 @@ def set_trap(app):
         current_app = trap
     _state._tls = NonTLS()
 
-    yield
-    _state._tls = prev_tls
+    try:
+        yield
+    finally:
+        _state._tls = prev_tls
 
 
 @contextmanager
@@ -95,15 +97,16 @@ def setup_default_app(app, use_trap=False):
     prev_finalizers = set(_state._on_app_finalizers)
     prev_apps = weakref.WeakSet(_state._apps)
 
-    if use_trap:
-        with set_trap(app):
+    try:
+        if use_trap:
+            with set_trap(app):
+                yield
+        else:
             yield
-    else:
-        yield
-
-    _state.set_default_app(prev_default_app)
-    _state._tls.current_app = prev_current_app
-    if app is not prev_current_app:
-        app.close()
-    _state._on_app_finalizers = prev_finalizers
-    _state._apps = prev_apps
+    finally:
+        _state.set_default_app(prev_default_app)
+        _state._tls.current_app = prev_current_app
+        if app is not prev_current_app:
+            app.close()
+        _state._on_app_finalizers = prev_finalizers
+        _state._apps = prev_apps

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 import codecs
 import os
 import re
@@ -139,7 +139,7 @@ class pytest(setuptools.command.test.test):
     user_options = [('pytest-args=', 'a', 'Arguments to pass to pytest')]
 
     def initialize_options(self):
-        setuptools.command.test.test.initialize_options(self)
+        super().initialize_options()
         self.pytest_args = []
 
     def run_tests(self):
@@ -160,10 +160,10 @@ setuptools.setup(
     author=meta['author'],
     author_email=meta['contact'],
     url=meta['homepage'],
-    license='BSD',
+    license='BSD-3-Clause',
     platforms=['any'],
     install_requires=install_requires(),
-    python_requires=">=3.7,",
+    python_requires=">=3.7",
     tests_require=reqs('test.txt'),
     extras_require=extras_require(),
     cmdclass={'test': pytest},
@@ -175,7 +175,8 @@ setuptools.setup(
         ]
     },
     project_urls={
-        "Documentation": "http://docs.celeryproject.org/en/latest/index.html",
+        "Documentation": "https://docs.celeryq.dev/en/stable/",
+        "Changelog": "https://docs.celeryq.dev/en/stable/changelog.html",
         "Code": "https://github.com/celery/celery",
         "Tracker": "https://github.com/celery/celery/issues",
         "Funding": "https://opencollective.com/celery"
@@ -185,6 +186,7 @@ setuptools.setup(
         "License :: OSI Approved :: BSD License",
         "Topic :: System :: Distributed Computing",
         "Topic :: Software Development :: Object Brokering",
+        "Framework :: Celery",
         "Programming Language :: Python",
         "Programming Language :: Python :: 3 :: Only",
         "Programming Language :: Python :: 3",

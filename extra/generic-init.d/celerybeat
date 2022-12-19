@@ -6,7 +6,7 @@
 # :Usage: /etc/init.d/celerybeat {start|stop|force-reload|restart|try-restart|status}
 # :Configuration file: /etc/default/celerybeat or /etc/default/celeryd
 #
-# See http://docs.celeryproject.org/en/latest/userguide/daemonizing.html#generic-init-scripts
+# See https://docs.celeryq.dev/en/latest/userguide/daemonizing.html#generic-init-scripts
 
 ### BEGIN INIT INFO
 # Provides:          celerybeat
@@ -25,7 +25,7 @@ echo "celery init v${VERSION}."
 
 if [ $(id -u) -ne 0 ]; then
     echo "Error: This program can only be used by the root user."
-    echo "       Unpriviliged users must use 'celery beat --detach'"
+    echo "       Unprivileged users must use 'celery beat --detach'"
     exit 1
 fi
 

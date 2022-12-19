@@ -6,8 +6,7 @@ from importlib import import_module
 
 import click
 
-from celery.bin.base import (CeleryCommand, CeleryOption,
-                             handle_preload_options)
+from celery.bin.base import CeleryCommand, CeleryOption, handle_preload_options
 
 
 def _invoke_fallback_shell(locals):
@@ -68,10 +67,10 @@ def _no_ipython(self):  # pragma: no cover
 
 def _invoke_default_shell(locals):
     try:
-        import IPython  # noqa
+        import IPython
     except ImportError:
         try:
-            import bpython  # noqa
+            import bpython
         except ImportError:
             _invoke_fallback_shell(locals)
         else:

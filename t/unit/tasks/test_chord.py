@@ -4,6 +4,7 @@ from unittest.mock import Mock, PropertyMock, patch, sentinel
 import pytest
 
 from celery import canvas, group, result, uuid
+from celery.canvas import Signature
 from celery.exceptions import ChordError, Retry
 from celery.result import AsyncResult, EagerResult, GroupResult
 
@@ -12,9 +13,14 @@ def passthru(x):
     return x
 
 
+class AnySignatureWithTask(Signature):
+    def __eq__(self, other):
+        return self.task == other.task
+
+
 class ChordCase:
 
-    def setup(self):
+    def setup_method(self):
 
         @self.app.task(shared=False)
         def add(x, y):
@@ -71,7 +77,7 @@ class test_unlock_chord_task(ChordCase):
 
         with self._chord_context(AlwaysReady) as (cb, retry, _):
             cb.type.apply_async.assert_called_with(
-                ([2, 4, 8, 6],), {}, task_id=cb.id,
+                ([2, 4, 8, 6],), {}, task_id=cb.id, stamped_headers=['groups'], groups=[]
             )
             # didn't retry
             assert not retry.call_count
@@ -209,17 +215,28 @@ class test_unlock_chord_task(ChordCase):
     def test_unlock_join_timeout_custom(self):
         self._test_unlock_join_timeout(timeout=5.0)
 
-    def test_unlock_with_chord_params(self):
+    def test_unlock_with_chord_params_default(self):
         @self.app.task(shared=False)
         def mul(x, y):
             return x * y
 
         from celery import chord
-        ch = chord(group(mul.s(1, 1), mul.s(2, 2)), mul.s(), interval=10)
+        g = group(mul.s(1, 1), mul.s(2, 2))
+        body = mul.s()
+        ch = chord(g, body, interval=10)
 
         with patch.object(ch, 'run') as run:
             ch.apply_async()
-            run.assert_called_once_with(group(mul.s(1, 1), mul.s(2, 2)), mul.s(), (), task_id=None, interval=10)
+            run.assert_called_once_with(
+                AnySignatureWithTask(g),
+                mul.s(),
+                (),
+                task_id=None,
+                kwargs={},
+                interval=10,
+                groups=[ch.tasks.id],
+                stamped_headers=['groups']
+            )
 
     def test_unlock_with_chord_params_and_task_id(self):
         @self.app.task(shared=False)
@@ -227,16 +244,22 @@ class test_unlock_chord_task(ChordCase):
             return x * y
 
         from celery import chord
-        ch = chord(group(mul.s(1, 1), mul.s(2, 2)), mul.s(), interval=10)
+        g = group(mul.s(1, 1), mul.s(2, 2))
+        body = mul.s()
+        ch = chord(g, body, interval=10)
 
         with patch.object(ch, 'run') as run:
             ch.apply_async(task_id=sentinel.task_id)
+
             run.assert_called_once_with(
-                group(mul.s(1, 1), mul.s(2, 2)),
+                AnySignatureWithTask(g),
                 mul.s(),
                 (),
                 task_id=sentinel.task_id,
+                kwargs={},
                 interval=10,
+                groups=[ch.tasks.id],
+                stamped_headers=['groups']
             )
 
 
@@ -279,10 +302,28 @@ class test_chord(ChordCase):
         finally:
             chord.run = prev
 
+    def test_init(self):
+        from celery import chord
+        from celery.utils.serialization import pickle
+
+        @self.app.task(shared=False)
+        def addX(x, y):
+            return x + y
+
+        @self.app.task(shared=False)
+        def sumX(n):
+            return sum(n)
+
+        x = chord(addX.s(i, i) for i in range(10))
+        # kwargs used to nest and recurse in serialization/deserialization
+        # (#6810)
+        assert x.kwargs['kwargs'] == {}
+        assert pickle.loads(pickle.dumps(x)).kwargs == x.kwargs
+
 
 class test_add_to_chord:
 
-    def setup(self):
+    def setup_method(self):
 
         @self.app.task(shared=False)
         def add(x, y):

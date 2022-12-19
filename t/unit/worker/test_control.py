@@ -1,5 +1,6 @@
 import socket
 import sys
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 from queue import Queue as FastQueue
@@ -16,7 +17,7 @@ from celery.worker import consumer, control
 from celery.worker import state as worker_state
 from celery.worker.pidbox import Pidbox, gPidbox
 from celery.worker.request import Request
-from celery.worker.state import revoked
+from celery.worker.state import REVOKE_EXPIRES, revoked, revoked_headers
 
 hostname = socket.gethostname()
 
@@ -115,7 +116,7 @@ class test_Pidbox_green:
 
 class test_ControlPanel:
 
-    def setup(self):
+    def setup_method(self):
         self.panel = self.create_panel(consumer=Consumer(self.app))
 
         @self.app.task(name='c.unittest.mytask', rate_limit=200, shared=False)
@@ -191,6 +192,22 @@ class test_ControlPanel:
             assert x['clock'] == 315  # incremented
         finally:
             worker_state.revoked.discard('revoked1')
+
+    def test_hello_does_not_send_expired_revoked_items(self):
+        consumer = Consumer(self.app)
+        panel = self.create_panel(consumer=consumer)
+        panel.state.app.clock.value = 313
+        panel.state.hostname = 'elaine@vandelay.com'
+        # Add an expired revoked item to the revoked set.
+        worker_state.revoked.add(
+            'expired_in_past',
+            now=time.monotonic() - REVOKE_EXPIRES - 1
+        )
+        x = panel.handle('hello', {
+            'from_node': 'george@vandelay.com',
+            'revoked': {'1234', '4567', '891'}
+        })
+        assert 'expired_in_past' not in x['revoked']
 
     def test_conf(self):
         consumer = Consumer(self.app)
@@ -523,6 +540,24 @@ class test_ControlPanel:
             assert 'terminate:' in r['ok']
             # unknown task id only revokes
             r = control.revoke(state, uuid(), terminate=True)
+            assert 'tasks unknown' in r['ok']
+        finally:
+            worker_state.task_ready(request)
+
+    def test_revoke_by_stamped_headers_terminate(self):
+        request = Mock()
+        request.id = uuid()
+        request.options = stamped_header = {'stamp': 'foo'}
+        request.options['stamped_headers'] = ['stamp']
+        state = self.create_state()
+        state.consumer = Mock()
+        worker_state.task_reserved(request)
+        try:
+            r = control.revoke_by_stamped_headers(state, stamped_header, terminate=True)
+            assert stamped_header == revoked_headers
+            assert 'terminate:' in r['ok']
+            # unknown task id only revokes
+            r = control.revoke_by_stamped_headers(state, stamped_header, terminate=True)
             assert 'tasks unknown' in r['ok']
         finally:
             worker_state.task_ready(request)

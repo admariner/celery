@@ -18,10 +18,8 @@ from kombu.utils.uuid import uuid
 from vine import starpromise
 
 from celery import platforms, signals
-from celery._state import (_announce_app_finalized, _deregister_app,
-                           _register_app, _set_current_app, _task_stack,
-                           connect_on_app_finalize, get_current_app,
-                           get_current_worker_task, set_default_app)
+from celery._state import (_announce_app_finalized, _deregister_app, _register_app, _set_current_app, _task_stack,
+                           connect_on_app_finalize, get_current_app, get_current_worker_task, set_default_app)
 from celery.exceptions import AlwaysEagerIgnored, ImproperlyConfigured
 from celery.loaders import get_loader_cls
 from celery.local import PromiseProxy, maybe_evaluate
@@ -32,18 +30,16 @@ from celery.utils.functional import first, head_from_fun, maybe_list
 from celery.utils.imports import gen_task_name, instantiate, symbol_by_name
 from celery.utils.log import get_logger
 from celery.utils.objects import FallbackContext, mro_lookup
-from celery.utils.time import timezone, to_utc
+from celery.utils.time import maybe_make_aware, timezone, to_utc
 
 # Load all builtin tasks
-from . import builtins  # noqa
-from . import backends
+from . import backends, builtins
 from .annotations import prepare as prepare_annotations
 from .autoretry import add_autoretry_behaviour
 from .defaults import DEFAULT_SECURITY_DIGEST, find_deprecated_settings
 from .registry import TaskRegistry
-from .utils import (AppPickler, Settings, _new_key_to_old, _old_key_to_new,
-                    _unpickle_app, _unpickle_app_v2, appstr, bugreport,
-                    detect_settings)
+from .utils import (AppPickler, Settings, _new_key_to_old, _old_key_to_new, _unpickle_app, _unpickle_app_v2, appstr,
+                    bugreport, detect_settings)
 
 __all__ = ('Celery',)
 
@@ -256,7 +252,7 @@ class Celery:
         self._pending_periodic_tasks = deque()
 
         self.finalized = False
-        self._finalize_mutex = threading.Lock()
+        self._finalize_mutex = threading.RLock()
         self._pending = deque()
         self._tasks = tasks
         if not isinstance(self._tasks, TaskRegistry):
@@ -461,6 +457,9 @@ class Celery:
                     sum([len(args), len(opts)])))
         return inner_create_task_cls(**opts)
 
+    def type_checker(self, fun, bound=False):
+        return staticmethod(head_from_fun(fun, bound=bound))
+
     def _task_from_fun(self, fun, name=None, base=None, bind=False, **options):
         if not self.finalized and not self.autofinalize:
             raise RuntimeError('Contract breach: app not finalized')
@@ -477,7 +476,7 @@ class Celery:
                 '__doc__': fun.__doc__,
                 '__module__': fun.__module__,
                 '__annotations__': fun.__annotations__,
-                '__header__': staticmethod(head_from_fun(fun, bound=bind)),
+                '__header__': self.type_checker(fun, bound=bind),
                 '__wrapped__': run}, **options))()
             # for some reason __qualname__ cannot be set in type()
             # so we have to set it here.
@@ -492,7 +491,7 @@ class Celery:
             task = self._tasks[name]
         return task
 
-    def register_task(self, task):
+    def register_task(self, task, **options):
         """Utility for registering a task-based class.
 
         Note:
@@ -505,7 +504,7 @@ class Celery:
             task_cls = type(task)
             task.name = self.gen_task_name(
                 task_cls.__name__, task_cls.__module__)
-        add_autoretry_behaviour(task)
+        add_autoretry_behaviour(task, **options)
         self.tasks[task.name] = task
         task._app = self
         task.bind(self)
@@ -607,7 +606,7 @@ class Celery:
             self.loader.cmdline_config_parser(argv, namespace)
         )
 
-    def setup_security(self, allowed_serializers=None, key=None, cert=None,
+    def setup_security(self, allowed_serializers=None, key=None, key_password=None, cert=None,
                        store=None, digest=DEFAULT_SECURITY_DIGEST,
                        serializer='json'):
         """Setup the message-signing serializer.
@@ -623,6 +622,8 @@ class Celery:
                 content_types that should be exempt from being disabled.
             key (str): Name of private key file to use.
                 Defaults to the :setting:`security_key` setting.
+            key_password (bytes): Password to decrypt the private key.
+                Defaults to the :setting:`security_key_password` setting.
             cert (str): Name of certificate file to use.
                 Defaults to the :setting:`security_certificate` setting.
             store (str): Directory containing certificates.
@@ -634,7 +635,7 @@ class Celery:
                 the serializers supported.  Default is ``json``.
         """
         from celery.security import setup_security
-        return setup_security(allowed_serializers, key, cert,
+        return setup_security(allowed_serializers, key, key_password, cert,
                               store, digest, serializer, app=self)
 
     def autodiscover_tasks(self, packages=None,
@@ -732,6 +733,28 @@ class Celery:
         ignore_result = options.pop('ignore_result', False)
         options = router.route(
             options, route_name or name, args, kwargs, task_type)
+        if expires is not None:
+            if isinstance(expires, datetime):
+                expires_s = (maybe_make_aware(
+                    expires) - self.now()).total_seconds()
+            else:
+                expires_s = expires
+
+            if expires_s < 0:
+                logger.warning(
+                    f"{task_id} has an expiration date in the past ({-expires_s}s ago).\n"
+                    "We assume this is intended and so we have set the "
+                    "expiration date to 0 instead.\n"
+                    "According to RabbitMQ's documentation:\n"
+                    "\"Setting the TTL to 0 causes messages to be expired upon "
+                    "reaching a queue unless they can be delivered to a "
+                    "consumer immediately.\"\n"
+                    "If this was unintended, please check the code which "
+                    "published this task."
+                )
+                expires_s = 0
+
+            options["expiration"] = expires_s
 
         if not root_id or not parent_id:
             parent = self.current_worker_task
@@ -745,6 +768,7 @@ class Celery:
                     options.setdefault('priority',
                                        parent.request.delivery_info.get('priority'))
 
+        # alias for 'task_as_v2'
         message = amqp.create_task_message(
             task_id, name, args, kwargs, countdown, eta, group_id, group_index,
             expires, retries, chord,
@@ -753,9 +777,12 @@ class Celery:
             self.conf.task_send_sent_event,
             root_id, parent_id, shadow, chain,
             ignore_result=ignore_result,
-            argsrepr=options.get('argsrepr'),
-            kwargsrepr=options.get('kwargsrepr'),
+            **options
         )
+
+        stamped_headers = options.pop('stamped_headers', [])
+        for stamp in stamped_headers:
+            options.pop(stamp)
 
         if connection:
             producer = amqp.Producer(connection, auto_declare=False)

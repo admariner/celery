@@ -11,8 +11,8 @@ from kombu.utils.objects import cached_property
 
 from . import current_app
 from .utils.collections import AttributeDict
-from .utils.time import (ffwd, humanize_seconds, localize, maybe_make_aware,
-                         maybe_timedelta, remaining, timezone, weekday)
+from .utils.time import (ffwd, humanize_seconds, localize, maybe_make_aware, maybe_timedelta, remaining, timezone,
+                         weekday)
 
 __all__ = (
     'ParseException', 'schedule', 'crontab', 'crontab_parser',
@@ -32,8 +32,8 @@ int, str, or an iterable type. {type!r} was given.\
 """
 
 CRON_REPR = """\
-<crontab: {0._orig_minute} {0._orig_hour} {0._orig_day_of_week} \
-{0._orig_day_of_month} {0._orig_month_of_year} (m/h/d/dM/MY)>\
+<crontab: {0._orig_minute} {0._orig_hour} {0._orig_day_of_month} {0._orig_month_of_year} \
+{0._orig_day_of_week} (m/h/dM/MY/d)>\
 """
 
 SOLAR_INVALID_LATITUDE = """\
@@ -171,9 +171,6 @@ class schedule(BaseSchedule):
         if isinstance(other, schedule):
             return self.run_every == other.run_every
         return self.run_every == other
-
-    def __ne__(self, other):
-        return not self.__eq__(other)
 
     def __reduce__(self):
         return self.__class__, (self.run_every, self.relative, self.nowfun)
@@ -442,7 +439,7 @@ class crontab(BaseSchedule):
         else:
             raise TypeError(CRON_INVALID_TYPE.format(type=type(cronspec)))
 
-        # assure the result does not preceed the min or exceed the max
+        # assure the result does not precede the min or exceed the max
         for number in result:
             if number >= max_ + min_ or number < min_:
                 raise ValueError(CRON_PATTERN_INVALID.format(
@@ -541,9 +538,7 @@ class crontab(BaseSchedule):
         super().__init__(**state)
 
     def remaining_delta(self, last_run_at, tz=None, ffwd=ffwd):
-        # pylint: disable=redefined-outer-name
         # caching global ffwd
-        tz = tz or self.tz
         last_run_at = self.maybe_make_aware(last_run_at)
         now = self.maybe_make_aware(self.now())
         dow_num = last_run_at.isoweekday() % 7  # Sunday is day 0, not day 7
@@ -612,16 +607,48 @@ class crontab(BaseSchedule):
     def is_due(self, last_run_at):
         """Return tuple of ``(is_due, next_time_to_run)``.
 
+        If :setting:`beat_cron_starting_deadline`  has been specified, the
+        scheduler will make sure that the `last_run_at` time is within the
+        deadline. This prevents tasks that could have been run according to
+        the crontab, but didn't, from running again unexpectedly.
+
         Note:
             Next time to run is in seconds.
 
         SeeAlso:
             :meth:`celery.schedules.schedule.is_due` for more information.
         """
+
         rem_delta = self.remaining_estimate(last_run_at)
-        rem = max(rem_delta.total_seconds(), 0)
+        rem_secs = rem_delta.total_seconds()
+        rem = max(rem_secs, 0)
         due = rem == 0
-        if due:
+
+        deadline_secs = self.app.conf.beat_cron_starting_deadline
+        has_passed_deadline = False
+        if deadline_secs is not None:
+            # Make sure we're looking at the latest possible feasible run
+            # date when checking the deadline.
+            last_date_checked = last_run_at
+            last_feasible_rem_secs = rem_secs
+            while rem_secs < 0:
+                last_date_checked = last_date_checked + abs(rem_delta)
+                rem_delta = self.remaining_estimate(last_date_checked)
+                rem_secs = rem_delta.total_seconds()
+                if rem_secs < 0:
+                    last_feasible_rem_secs = rem_secs
+
+            # if rem_secs becomes 0 or positive, second-to-last
+            # last_date_checked must be the last feasible run date.
+            # Check if the last feasible date is within the deadline
+            # for running
+            has_passed_deadline = -last_feasible_rem_secs > deadline_secs
+            if has_passed_deadline:
+                # Should not be due if we've passed the deadline for looking
+                # at past runs
+                due = False
+
+        if due or has_passed_deadline:
             rem_delta = self.remaining_estimate(self.now())
             rem = max(rem_delta.total_seconds(), 0)
         return schedstate(due, rem)
@@ -637,12 +664,6 @@ class crontab(BaseSchedule):
                 super().__eq__(other)
             )
         return NotImplemented
-
-    def __ne__(self, other):
-        res = self.__eq__(other)
-        if res is NotImplemented:
-            return True
-        return not res
 
 
 def maybe_schedule(s, relative=False, app=None):
@@ -665,7 +686,7 @@ class solar(BaseSchedule):
 
     Notes:
 
-        Available event valus are:
+        Available event values are:
 
             - ``dawn_astronomical``
             - ``dawn_nautical``
@@ -827,9 +848,3 @@ class solar(BaseSchedule):
                 other.lon == self.lon
             )
         return NotImplemented
-
-    def __ne__(self, other):
-        res = self.__eq__(other)
-        if res is NotImplemented:
-            return True
-        return not res

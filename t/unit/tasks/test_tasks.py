@@ -4,19 +4,20 @@ from datetime import datetime, timedelta
 from unittest.mock import ANY, MagicMock, Mock, patch, sentinel
 
 import pytest
-from case import ContextMock
 from kombu import Queue
 from kombu.exceptions import EncodeError
 
 from celery import Task, group, uuid
 from celery.app.task import _reprtask
+from celery.canvas import StampingVisitor, signature
+from celery.contrib.testing.mocks import ContextMock
 from celery.exceptions import Ignore, ImproperlyConfigured, Retry
 from celery.result import AsyncResult, EagerResult
 from celery.utils.time import parse_iso8601
 
 try:
     from urllib.error import HTTPError
-except ImportError:  # pragma: no cover
+except ImportError:
     from urllib2 import HTTPError
 
 
@@ -48,9 +49,18 @@ class TaskWithRetry(Task):
     retry_jitter = False
 
 
+class TaskWithRetryButForTypeError(Task):
+    autoretry_for = (Exception,)
+    dont_autoretry_for = (TypeError,)
+    retry_kwargs = {'max_retries': 5}
+    retry_backoff = True
+    retry_backoff_max = 700
+    retry_jitter = False
+
+
 class TasksCase:
 
-    def setup(self):
+    def setup_method(self):
         self.mytask = self.app.task(shared=False)(return_True)
 
         @self.app.task(bind=True, count=0, shared=False)
@@ -221,6 +231,15 @@ class TasksCase:
             return a / b
 
         self.autoretry_task = autoretry_task
+
+        @self.app.task(bind=True, autoretry_for=(ArithmeticError,),
+                       dont_autoretry_for=(ZeroDivisionError,),
+                       retry_kwargs={'max_retries': 5}, shared=False)
+        def autoretry_arith_task(self, a, b):
+            self.iterations += 1
+            return a / b
+
+        self.autoretry_arith_task = autoretry_arith_task
 
         @self.app.task(bind=True, autoretry_for=(HTTPError,),
                        retry_backoff=True, shared=False)
@@ -560,6 +579,12 @@ class test_task_retries(TasksCase):
         self.autoretry_task.iterations = 0
         self.autoretry_task.apply((1, 0))
         assert self.autoretry_task.iterations == 6
+
+    def test_autoretry_arith(self):
+        self.autoretry_arith_task.max_retries = 3
+        self.autoretry_arith_task.iterations = 0
+        self.autoretry_arith_task.apply((1, 0))
+        assert self.autoretry_arith_task.iterations == 1
 
     @patch('random.randrange', side_effect=lambda i: i - 1)
     def test_autoretry_backoff(self, randrange):
@@ -930,7 +955,7 @@ class test_tasks(TasksCase):
                 consumer, sresult, self.mytask.name, name='Elaine M. Benes',
             )
 
-            # With ETA.
+            # With ETA, absolute expires.
             presult2 = self.mytask.apply_async(
                 kwargs={'name': 'George Costanza'},
                 eta=self.now() + timedelta(days=1),
@@ -941,9 +966,53 @@ class test_tasks(TasksCase):
                 name='George Costanza', test_eta=True, test_expires=True,
             )
 
+            # With ETA, absolute expires without timezone.
+            presult2 = self.mytask.apply_async(
+                kwargs={'name': 'George Constanza'},
+                eta=self.now() + timedelta(days=1),
+                expires=(self.now() + timedelta(hours=2)).replace(tzinfo=None),
+            )
+            self.assert_next_task_data_equal(
+                consumer, presult2, self.mytask.name,
+                name='George Constanza', test_eta=True, test_expires=True,
+            )
+
+            # With ETA, absolute expires in the past.
+            presult2 = self.mytask.apply_async(
+                kwargs={'name': 'George Costanza'},
+                eta=self.now() + timedelta(days=1),
+                expires=self.now() - timedelta(days=2),
+            )
+            self.assert_next_task_data_equal(
+                consumer, presult2, self.mytask.name,
+                name='George Costanza', test_eta=True, test_expires=True,
+            )
+
+            # With ETA, relative expires.
+            presult2 = self.mytask.apply_async(
+                kwargs={'name': 'George Costanza'},
+                eta=self.now() + timedelta(days=1),
+                expires=2 * 24 * 60 * 60,
+            )
+            self.assert_next_task_data_equal(
+                consumer, presult2, self.mytask.name,
+                name='George Costanza', test_eta=True, test_expires=True,
+            )
+
             # With countdown.
             presult2 = self.mytask.apply_async(
                 kwargs={'name': 'George Costanza'}, countdown=10, expires=12,
+            )
+            self.assert_next_task_data_equal(
+                consumer, presult2, self.mytask.name,
+                name='George Costanza', test_eta=True, test_expires=True,
+            )
+
+            # With ETA, absolute expires in the past in ISO format.
+            presult2 = self.mytask.apply_async(
+                kwargs={'name': 'George Costanza'},
+                eta=self.now() + timedelta(days=1),
+                expires=self.now() - timedelta(days=2),
             )
             self.assert_next_task_data_equal(
                 consumer, presult2, self.mytask.name,
@@ -991,6 +1060,24 @@ class test_tasks(TasksCase):
             'task-foo', uuid='fb', id=3122,
             retry=True, retry_policy=self.app.conf.task_publish_retry_policy)
 
+    @pytest.mark.usefixtures('depends_on_current_app')
+    def test_on_replace(self):
+        class CustomStampingVisitor(StampingVisitor):
+            def on_signature(self, sig, **headers) -> dict:
+                return {'header': 'value'}
+
+        class MyTask(Task):
+            def on_replace(self, sig):
+                sig.stamp(CustomStampingVisitor())
+                return super().on_replace(sig)
+
+        mytask = self.app.task(shared=False, base=MyTask)(return_True)
+
+        sig1 = signature('sig1')
+        with pytest.raises(Ignore):
+            mytask.replace(sig1)
+        assert sig1.options['header'] == 'value'
+
     def test_replace(self):
         sig1 = MagicMock(name='sig1')
         sig1.options = {}
@@ -998,6 +1085,11 @@ class test_tasks(TasksCase):
         with pytest.raises(Ignore):
             self.mytask.replace(sig1)
         sig1.freeze.assert_called_once_with(self.mytask.request.id)
+        sig1.set.assert_called_once_with(replaced_task_nesting=1,
+                                         chord=ANY,
+                                         group_id=ANY,
+                                         group_index=ANY,
+                                         root_id=ANY)
 
     def test_replace_with_chord(self):
         sig1 = Mock(name='sig1')
